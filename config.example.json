@@ -1,0 +1,6 @@
+{
+  "sourceRoot": "../Photos",
+  "dataDir": "./data",
+  "port": 3210,
+  "importConcurrency": 2
+}

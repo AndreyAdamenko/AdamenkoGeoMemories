@@ -1,0 +1,47 @@
+{
+  "name": "adamenko-geo-memories",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "author": "AndreyAdamenko",
+  "homepage": "https://github.com/AndreyAdamenko/AdamenkoGeoMemories#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AndreyAdamenko/AdamenkoGeoMemories.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AndreyAdamenko/AdamenkoGeoMemories/issues"
+  },
+  "type": "module",
+  "description": "AdamenkoGeoMemories — локальный фотоатлас с картой OSM, альбомами и переносимым запуском.",
+  "scripts": {
+    "setup": "node scripts/run.cjs setup",
+    "start": "node scripts/run.cjs start",
+    "dev": "node scripts/run.cjs dev",
+    "build": "node scripts/run.cjs build",
+    "check": "node scripts/run.cjs check",
+    "test": "node scripts/run.cjs test",
+    "import": "node scripts/run.cjs import"
+  },
+  "dependencies": {
+    "exiftool-vendored": "^39.0.1",
+    "express": "^5.3.0",
+    "leaflet": "^1.9.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sharp": "^0.35.5",
+    "supercluster": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/leaflet": "^1.9.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/supercluster": "^7.1.3",
+    "node": "24.22.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.5"
+  }
+}
