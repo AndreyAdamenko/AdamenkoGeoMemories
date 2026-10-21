@@ -57,6 +57,8 @@ try {
     }
     $batch = [IO.File]::ReadAllText((Join-Path $repoRoot 'portable\start-server.bat')) -replace '\r?\n', "`r`n"
     [IO.File]::WriteAllText((Join-Path $deployPath 'start-server.bat'), $batch, $utf8)
+    $publicBatch = [IO.File]::ReadAllText((Join-Path $repoRoot 'portable\start-public.bat')) -replace '\r?\n', "`r`n"
+    [IO.File]::WriteAllText((Join-Path $deployPath 'start-public.bat'), $publicBatch, $utf8)
     Write-Json (Join-Path $deployPath 'config.local.json') @{ sourceRoot = '..'; dataDir = './data'; portable = $true; port = $settings.port; importConcurrency = $settings.importConcurrency }
 
     $manifest = @()

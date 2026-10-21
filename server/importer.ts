@@ -6,6 +6,7 @@ import type { DB } from "./db.ts";
 import { inside, projectRoot } from "./config.ts";
 import type { Config } from "./config.ts";
 import { validCoordinates } from "./catalog.ts";
+import { readAltitude } from "./altitude.ts";
 
 const EXTENSIONS = new Set([
   ".jpg",
@@ -240,6 +241,9 @@ export class Importer {
             lat: number | null = null,
             lon: number | null = null,
             metadata: string | null = null;
+          let altitude: number | null = null,
+            altitudeChecked = 0,
+            altitudeError: string | null = null;
           if (!f.size) {
             status = "empty";
             error = "Пустой файл (0 байт)";
@@ -314,6 +318,17 @@ export class Importer {
                   warnings: tags.warnings,
                   errors: tags.errors,
                 });
+                try {
+                  altitude = await readAltitude(
+                    path.join(root, ...f.relative.split("/")),
+                    format,
+                    this.tool,
+                  );
+                  altitudeChecked = 1;
+                } catch (e) {
+                  altitudeChecked = 2;
+                  altitudeError = (e as Error).message;
+                }
                 this.job.imported++;
               }
             } catch (e) {
@@ -326,8 +341,8 @@ export class Importer {
             : "";
           this.db
             .prepare(
-              `INSERT INTO photos(id,source_root,relative_path,filename,folder,size,mtime_ms,format,width,height,taken_at,date_source,original_lat,original_lon,status,error,metadata_json,seen_run)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_root,relative_path) DO UPDATE SET size=excluded.size,mtime_ms=excluded.mtime_ms,format=excluded.format,width=excluded.width,height=excluded.height,taken_at=excluded.taken_at,date_source=excluded.date_source,original_lat=excluded.original_lat,original_lon=excluded.original_lon,status=excluded.status,error=excluded.error,metadata_json=excluded.metadata_json,seen_run=excluded.seen_run,updated_at=datetime('now')`,
+              `INSERT INTO photos(id,source_root,relative_path,filename,folder,size,mtime_ms,format,width,height,taken_at,date_source,original_lat,original_lon,status,error,metadata_json,seen_run,original_altitude,altitude_checked,altitude_error)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_root,relative_path) DO UPDATE SET size=excluded.size,mtime_ms=excluded.mtime_ms,format=excluded.format,width=excluded.width,height=excluded.height,taken_at=excluded.taken_at,date_source=excluded.date_source,original_lat=excluded.original_lat,original_lon=excluded.original_lon,status=excluded.status,error=excluded.error,metadata_json=excluded.metadata_json,seen_run=excluded.seen_run,original_altitude=excluded.original_altitude,altitude_checked=excluded.altitude_checked,altitude_error=excluded.altitude_error,updated_at=datetime('now')`,
             )
             .run(
               id,
@@ -348,6 +363,9 @@ export class Importer {
               error,
               metadata,
               this.job.id,
+              altitude,
+              altitudeChecked,
+              altitudeError,
             );
           this.onChange();
         }

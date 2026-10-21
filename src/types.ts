@@ -15,6 +15,11 @@ export type Photo = {
   original_lon: number | null;
   manual_lat: number | null;
   manual_lon: number | null;
+  altitude: number | null;
+  original_altitude: number | null;
+  manual_altitude: number | null;
+  altitude_checked: number;
+  altitude_error: string | null;
   description: string;
   status: string;
   error: string | null;
@@ -62,6 +67,17 @@ export type Status = {
   };
   job: Job;
   version: number;
+  altitudeJob: {
+    state: string;
+    total: number;
+    pending: number;
+    checked: number;
+    failed: number;
+    found: number;
+    invalid: number;
+    current: string;
+    error: string;
+  };
 };
 export type Filters = {
   q: string;

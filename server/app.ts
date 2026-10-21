@@ -6,6 +6,8 @@ import type { Config } from "./config.ts";
 import { projectRoot } from "./config.ts";
 import { openDatabase } from "./db.ts";
 import { preparePortableCatalog } from "./portable.ts";
+import { AltitudeBackfill } from "./altitude-backfill.ts";
+import { FLIGHT_ALTITUDE } from "./altitude.ts";
 import {
   editPhotos,
   facets,
@@ -14,6 +16,7 @@ import {
   LAT,
   listPhotos,
   LON,
+  ALT,
   saveAlbum,
   stats,
 } from "./catalog.ts";
@@ -34,6 +37,7 @@ export function createApp(config: Config) {
     version++;
   };
   const importer = new Importer(db, config, changed);
+  const altitudeBackfill = new AltitudeBackfill(db, config, changed);
   const media = createMedia(db, config, importer.tool);
   const app = express();
   app.disable("x-powered-by");
@@ -76,6 +80,7 @@ export function createApp(config: Config) {
       stats: stats(db),
       job: importer.job,
       version,
+      altitudeJob: altitudeBackfill.status(),
     }),
   );
   app.get("/api/facets", (_req, res) => res.json(facets(db)));
@@ -114,13 +119,27 @@ export function createApp(config: Config) {
     changed();
     res.json({ ok: true });
   });
-  app.post("/api/import/start", (_req, res) =>
-    res.status(202).json(importer.start()),
-  );
+  app.post("/api/import/start", (_req, res) => {
+    if (altitudeBackfill.active)
+      throw Error("Дождитесь завершения чтения высоты или приостановите его.");
+    res.status(202).json(importer.start());
+  });
   app.post("/api/import/stop", (_req, res) => res.json(importer.stop()));
+  app.post("/api/altitude/start", (req, res) => {
+    if (importer.active) throw Error("Дождитесь завершения импорта.");
+    res
+      .status(202)
+      .json(altitudeBackfill.start(req.body?.retryErrors === true));
+  });
+  app.post("/api/altitude/stop", (_req, res) =>
+    res.json(altitudeBackfill.stop()),
+  );
   const clusterCache = new Map<
     string,
-    Supercluster<{ id: string }, Supercluster.AnyProps>
+    Supercluster<
+      { id: string; altitude: number | null; flightCount: number },
+      { flightCount: number }
+    >
   >();
   app.get("/api/map", (req, res) => {
     const f = filters(req.query),
@@ -130,12 +149,19 @@ export function createApp(config: Config) {
       const { where, values } = filterSQL(f);
       const points = db
         .prepare(
-          `SELECT p.id,${LAT} AS lat,${LON} AS lon FROM photos p WHERE ${where} AND ${LAT} IS NOT NULL AND ${LON} IS NOT NULL`,
+          `SELECT p.id,${LAT} AS lat,${LON} AS lon,${ALT} AS altitude FROM photos p WHERE ${where} AND ${LAT} IS NOT NULL AND ${LON} IS NOT NULL`,
         )
         .all(...values);
-      index = new Supercluster<{ id: string }>({
+      index = new Supercluster<
+        { id: string; altitude: number | null; flightCount: number },
+        { flightCount: number }
+      >({
         radius: 55,
         maxZoom: 19,
+        map: (p) => ({ flightCount: p.flightCount }),
+        reduce: (a, p) => {
+          a.flightCount += p.flightCount;
+        },
       }).load(
         points.map((p) => ({
           type: "Feature",
@@ -143,7 +169,14 @@ export function createApp(config: Config) {
             type: "Point",
             coordinates: [Number(p.lon), Number(p.lat)],
           },
-          properties: { id: String(p.id) },
+          properties: {
+            id: String(p.id),
+            altitude: p.altitude === null ? null : Number(p.altitude),
+            flightCount:
+              typeof p.altitude === "number" && p.altitude >= FLIGHT_ALTITUDE
+                ? 1
+                : 0,
+          },
         })),
       );
       if (clusterCache.size >= 4) clusterCache.clear();
@@ -231,7 +264,7 @@ export function createApp(config: Config) {
     res.attachment("adamenko-geo-memories-metadata.json");
     const photos = db
       .prepare(
-        "SELECT id,source_root,relative_path,description,manual_lat,manual_lon FROM photos ORDER BY relative_path",
+        "SELECT id,source_root,relative_path,description,manual_lat,manual_lon,manual_altitude FROM photos ORDER BY relative_path",
       )
       .all()
       .map((p) => ({
@@ -239,6 +272,7 @@ export function createApp(config: Config) {
         sourceRoot: p.source_root,
         path: p.relative_path,
         description: p.description,
+        manualAltitude: p.manual_altitude,
         manualCoordinates:
           p.manual_lat === null
             ? null
@@ -287,7 +321,9 @@ export function createApp(config: Config) {
     app,
     db,
     importer,
+    altitudeBackfill,
     async close() {
+      await altitudeBackfill.close();
       await importer.close();
       db.close();
     },

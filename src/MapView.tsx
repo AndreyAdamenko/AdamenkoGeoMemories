@@ -13,6 +13,8 @@ type MapFeature = {
     cluster_id?: number;
     point_count?: number;
     expansionZoom?: number;
+    altitude?: number | null;
+    flightCount?: number;
   };
 };
 export type ClusterSelection = {
@@ -111,11 +113,15 @@ export function MapView({
               const marker = L.marker([lat, lon], {
                 icon: L.divIcon({
                   className: "cluster-shell",
-                  html: `<span class="map-cluster ${Number(p.point_count) > 100 ? "big" : ""}">${count(p.point_count)}</span>`,
+                  html: `<span class="map-cluster ${Number(p.point_count) > 100 ? "big" : ""} ${p.flightCount ? "has-flights" : ""}">${count(p.point_count)}${p.flightCount ? '<small class="flight-badge">✈</small>' : ""}</span>`,
                   iconSize: [50, 50],
                   iconAnchor: [25, 25],
                 }),
               });
+              if (p.flightCount)
+                marker.bindTooltip(
+                  `${count(p.flightCount)} фото с высотой от 6 000 м`,
+                );
               marker.on("click", () => {
                 if (m.getZoom() >= 17 || (p.expansionZoom || 0) >= 19)
                   clusterCallback.current({
@@ -134,11 +140,17 @@ export function MapView({
               const marker = L.marker([lat, lon], {
                 icon: L.divIcon({
                   className: "photo-pin-shell",
-                  html: '<span class="photo-pin"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></span>',
+                  html: p.flightCount
+                    ? '<span class="photo-pin flight-pin"><svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg></span>'
+                    : '<span class="photo-pin"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></span>',
                   iconSize: [34, 38],
                   iconAnchor: [17, 38],
                 }),
               });
+              if (p.altitude !== null && p.altitude !== undefined)
+                marker.bindTooltip(
+                  `Высота: ${Math.round(p.altitude).toLocaleString("ru-RU")} м${p.flightCount ? " · ✈" : ""}`,
+                );
               marker.on("click", () => callback.current(p.id!));
               marker.addTo(markers.current!);
             }
@@ -179,7 +191,7 @@ export function MapView({
         <span className="status-dot" />
         {count(visible)} фото в этой области
         <span className="map-caption-hint">
-          Приблизьте карту, чтобы увидеть снимки
+          ✈ от 6 000 м · Приблизьте карту, чтобы увидеть снимки
         </span>
       </div>
       {error && <div className="map-error">{error}</div>}

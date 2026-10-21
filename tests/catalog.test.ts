@@ -16,6 +16,162 @@ import { resolveConfig, inside } from "../server/config.ts";
 import { preparePortableCatalog } from "../server/portable.ts";
 import { originalPath } from "../server/media.ts";
 import { Importer } from "../server/importer.ts";
+import { AltitudeBackfill } from "../server/altitude-backfill.ts";
+import { readAltitude, signedAltitude } from "../server/altitude.ts";
+
+test("Дочитывание высоты мигрирует старую базу, продолжается после остановки и сохраняет оригиналы, кэш и ручные поправки", async () => {
+  const temp = await fs.mkdtemp(
+    path.join(os.tmpdir(), "geo-memories-altitude-"),
+  );
+  const source = path.join(temp, "photos"),
+    data = path.join(temp, "data");
+  await fs.mkdir(source);
+  const jpeg = await sharp({
+    create: { width: 20, height: 20, channels: 3, background: "#267366" },
+  })
+    .jpeg()
+    .toBuffer();
+  const high = path.join(source, "high.jpg"),
+    low = path.join(source, "low.jpg"),
+    none = path.join(source, "none.jpg"),
+    bad = path.join(source, "bad.jpg");
+  for (const file of [high, low, none, bad]) await fs.writeFile(file, jpeg);
+  const tool = new ExifTool({ maxProcs: 1 });
+  try {
+    await tool.write(
+      high,
+      { GPSAltitude: 9360, GPSAltitudeRef: 0 },
+      { writeArgs: ["-overwrite_original"] },
+    );
+    await tool.write(
+      low,
+      { GPSAltitude: -30 },
+      { writeArgs: ["-overwrite_original"] },
+    );
+    await tool.write(
+      bad,
+      { GPSAltitude: 4294967295, GPSAltitudeRef: 0 },
+      { writeArgs: ["-overwrite_original"] },
+    );
+    assert.equal(await readAltitude(high, "JPEG", tool), 9360);
+    assert.equal(await readAltitude(low, "JPEG", tool), -30);
+    assert.equal(await readAltitude(low, "TIFF", tool), -30);
+    assert.equal(await readAltitude(high, "TIFF", tool), 9360);
+    assert.equal(await readAltitude(none, "JPEG", tool), null);
+    assert.equal(await readAltitude(bad, "JPEG", tool), 4294967295);
+    assert.equal(signedAltitude(20, 3), -20);
+  } finally {
+    await tool.end();
+  }
+  const originals = await Promise.all(
+    [high, low, none, bad].map((f) => fs.readFile(f)),
+  );
+  let db = openDatabase(data);
+  for (const name of ["a-high", "b-low", "c-none", "d-bad", "e-missing"]) {
+    const file = name.slice(2) + ".jpg";
+    db.prepare(
+      "INSERT INTO photos(id,source_root,relative_path,filename,folder,size,mtime_ms,format,original_lat,original_lon) VALUES(?,?,?,?,'',1,1,'JPEG',43,76)",
+    ).run(name, source, file, file);
+  }
+  editPhotos(db, {
+    ids: ["a-high"],
+    description: "Сохранить",
+    addTags: ["поездка"],
+    location: { lat: 1, lon: 2 },
+  });
+  for (const column of [
+    "original_altitude",
+    "manual_altitude",
+    "altitude_checked",
+    "altitude_error",
+  ])
+    db.exec(`ALTER TABLE photos DROP COLUMN ${column}`);
+  db.exec("PRAGMA user_version=1");
+  db.close();
+  db = openDatabase(data);
+  const config = {
+    sourceRoot: source,
+    dataDir: data,
+    port: 0,
+    importConcurrency: 1,
+  };
+  let job = new AltitudeBackfill(db, config);
+  await fs.mkdir(path.join(data, "thumbnails"));
+  const preview = path.join(data, "thumbnails", "existing.webp");
+  await fs.writeFile(preview, "existing preview");
+  try {
+    editPhotos(db, { ids: ["a-high"], altitude: 1234 });
+    job.start();
+    job.stop();
+    await job.active;
+    assert.equal(job.state, "paused");
+    assert.ok(job.status().pending > 0);
+    await job.close();
+    db.close();
+    db = openDatabase(data);
+    job = new AltitudeBackfill(db, config);
+    job.start();
+    await job.active;
+    assert.equal(job.state, "completed");
+    assert.equal(job.status().pending, 0);
+    assert.equal(job.status().failed, 1);
+    assert.equal(job.status().invalid, 1);
+    let photo = listPhotos(db, {}).photos.find((p) => p.id === "a-high")!;
+    assert.equal(photo.original_altitude, 9360);
+    assert.equal(photo.altitude, 1234);
+    assert.equal(photo.description, "Сохранить");
+    assert.equal(photo.lat, 1);
+    assert.deepEqual(photo.tags, ["поездка"]);
+    assert.equal(
+      listPhotos(db, {}).photos.find((p) => p.id === "b-low")!.altitude,
+      -30,
+    );
+    assert.equal(
+      listPhotos(db, {}).photos.find((p) => p.id === "c-none")!.altitude,
+      null,
+    );
+    assert.equal(
+      listPhotos(db, {}).photos.find((p) => p.id === "d-bad")!.altitude,
+      null,
+    );
+    editPhotos(db, { ids: ["a-high"], altitude: null });
+    assert.equal(
+      listPhotos(db, {}).photos.find((p) => p.id === "a-high")!.altitude,
+      9360,
+    );
+    assert.throws(() =>
+      editPhotos(db, { ids: ["a-high"], altitude: 4294967295 }),
+    );
+    assert.throws(() =>
+      editPhotos(db, {
+        ids: ["a-high"],
+        altitude: "9000" as unknown as number,
+      }),
+    );
+    await fs.rename(high, high + ".offline");
+    job.start();
+    await job.active;
+    assert.equal(job.status().failed, 1); // checked originals are not read again
+    await fs.writeFile(path.join(source, "missing.jpg"), jpeg);
+    job.start(true);
+    await job.active;
+    assert.equal(job.status().failed, 0);
+    await fs.rename(high + ".offline", high);
+    assert.deepEqual(
+      await Promise.all([high, low, none, bad].map((f) => fs.readFile(f))),
+      originals,
+    );
+    assert.equal(await fs.readFile(preview, "utf8"), "existing preview");
+  } finally {
+    await job.close();
+    db.close();
+    assert.ok(
+      inside(os.tmpdir(), temp) &&
+        path.basename(temp).startsWith("geo-memories-altitude-"),
+    );
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("Перенос архива сохраняет ID, кэш и подписи; программа и миниатюры не импортируются", async () => {
   const temp = await fs.mkdtemp(
@@ -196,6 +352,8 @@ test("Импорт, карта, групповое редактирование,
       {
         GPSLatitude: 43.2,
         GPSLongitude: 76.9,
+        GPSAltitude: 9360,
+        GPSAltitudeRef: 0,
         DateTimeOriginal: "2020:01:02 03:04:05",
       },
       { writeArgs: ["-overwrite_original"] },
@@ -258,6 +416,8 @@ test("Импорт, карта, групповое редактирование,
     const ids = result.photos.map((p: { id: string }) => p.id);
     assert.equal(result.photos[0].lat, 43.2);
     assert.equal(result.photos[0].lon, 76.9);
+    assert.equal(result.photos[0].altitude, 9360);
+    assert.equal(result.photos[0].altitude_checked, 1);
     assert.equal(result.photos[0].taken_at, "2020-01-02T03:04:05");
     assert.equal((await req("/api/photos?bbox=76,43,77,44&limit=1")).total, 2);
     assert.equal((await req("/api/photos?bbox=0,0,1,1")).total, 0);
@@ -265,6 +425,9 @@ test("Импорт, карта, групповое редактирование,
     assert.equal(issues.total, 2);
     const map = await req("/api/map?zoom=3");
     assert.equal(map.features[0].properties.point_count, 2);
+    assert.equal(map.features[0].properties.flightCount, 2);
+    const singles = await req("/api/map?zoom=20");
+    assert.equal(singles.features[0].properties.altitude, 9360);
     const leaves = await req(
       `/api/map/leaves?snapshot=${map.snapshot}&clusterId=${map.features[0].properties.cluster_id}`,
     );
@@ -279,6 +442,7 @@ test("Импорт, карта, групповое редактирование,
       addTags: ["СЕМЬЯ", "горы"],
       location: { lat: -12.5, lon: 130.8 },
       albumId: album.id,
+      altitude: 100,
     });
     assert.equal((await req("/api/photos?album=" + album.id)).total, 2);
     assert.equal((await req("/api/photos?bbox=76,43,77,44")).total, 0);
@@ -325,6 +489,11 @@ test("Импорт, карта, групповое редактирование,
     let photo = await req("/api/photos/" + ids[0]);
     assert.equal(photo.description, "Наша поездка");
     assert.equal(photo.lat, -12.5);
+    assert.equal(photo.altitude, 100);
+    assert.equal(
+      (await req("/api/map?zoom=3")).features[0].properties.flightCount,
+      0,
+    );
     assert.deepEqual(photo.tags, ["горы", "семья"]);
     assert.equal((await req("/api/photos?album=" + album.id)).total, 2);
     assert.deepEqual(
@@ -366,6 +535,7 @@ test("Импорт, карта, групповое редактирование,
     await req("/api/photos/edit", {
       ids,
       location: null,
+      altitude: null,
       removeTags: ["горы"],
       removeAlbumId: album.id,
     });

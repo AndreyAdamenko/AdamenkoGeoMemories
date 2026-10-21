@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
 import type { DB } from "./db.ts";
 import { transaction } from "./db.ts";
+import { validAltitude } from "./altitude.ts";
 
 export const LAT = "COALESCE(p.manual_lat,p.original_lat)";
 export const LON = "COALESCE(p.manual_lon,p.original_lon)";
+export const ALT =
+  "COALESCE(p.manual_altitude,CASE WHEN p.original_altitude BETWEEN -12000 AND 100000 THEN p.original_altitude END)";
 export type Filters = {
   q?: string;
   folder?: string;
@@ -85,7 +88,7 @@ export function filterSQL(f: Filters) {
   if (f.to) add("p.taken_at < ?", `${f.to}T99`);
   return { where: clauses.join(" AND "), values };
 }
-const SELECT_PHOTO = `p.id,p.filename,p.relative_path,p.folder,p.size,p.format,p.width,p.height,p.taken_at,p.date_source,p.original_lat,p.original_lon,p.manual_lat,p.manual_lon,p.description,p.status,p.error,${LAT} AS lat,${LON} AS lon`;
+const SELECT_PHOTO = `p.id,p.filename,p.relative_path,p.folder,p.size,p.format,p.width,p.height,p.taken_at,p.date_source,p.original_lat,p.original_lon,p.manual_lat,p.manual_lon,p.original_altitude,p.manual_altitude,p.altitude_checked,p.altitude_error,p.description,p.status,p.error,${LAT} AS lat,${LON} AS lon,${ALT} AS altitude`;
 export function listPhotos(db: DB, filters: Filters, offset = 0, limit = 80) {
   const { where, values } = filterSQL(filters);
   const total = Number(
@@ -100,7 +103,13 @@ export function listPhotos(db: DB, filters: Filters, offset = 0, limit = 80) {
     .all(...values, limit, offset);
   return { total, photos: photos.map((p) => attach(db, p)), offset, limit };
 }
-function attach(db: DB, p: Record<string, unknown>) {
+function attach(
+  db: DB,
+  p: Record<string, unknown>,
+): Record<string, unknown> & {
+  tags: unknown[];
+  albums: Record<string, unknown>[];
+} {
   return {
     ...p,
     tags: db
@@ -176,6 +185,7 @@ export type Edit = {
   addTags?: string[];
   removeTags?: string[];
   location?: { lat: number; lon: number } | null;
+  altitude?: number | null;
   albumId?: string;
   removeAlbumId?: string;
 };
@@ -188,6 +198,12 @@ export function editPhotos(db: DB, edit: Edit) {
   )
     throw Error("Выберите от 1 до 10 000 фотографий.");
   const ids = [...new Set(edit.ids)];
+  if (
+    edit.altitude !== undefined &&
+    edit.altitude !== null &&
+    !validAltitude(edit.altitude)
+  )
+    throw Error("Высота должна быть числом от −12 000 до 100 000 метров.");
   if (
     edit.description !== undefined &&
     (typeof edit.description !== "string" || edit.description.length > 20000)
@@ -235,6 +251,10 @@ export function editPhotos(db: DB, edit: Edit) {
         db.prepare(
           "UPDATE photos SET manual_lat=?,manual_lon=?,updated_at=datetime('now') WHERE id=?",
         ).run(edit.location?.lat ?? null, edit.location?.lon ?? null, id);
+      if (edit.altitude !== undefined)
+        db.prepare(
+          "UPDATE photos SET manual_altitude=?,updated_at=datetime('now') WHERE id=?",
+        ).run(edit.altitude, id);
       for (const name of addTags) {
         db.prepare(
           "INSERT INTO tags(name) VALUES(?) ON CONFLICT(name) DO NOTHING",

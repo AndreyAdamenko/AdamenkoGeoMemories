@@ -765,6 +765,36 @@ small {
 .photo-pin svg {
   transform: rotate(45deg);
 }
+.flight-pin {
+  background: #416f9e;
+}
+.map-cluster.has-flights {
+  position: relative;
+}
+.flight-badge {
+  position: absolute;
+  right: -8px;
+  top: -7px;
+  background: #416f9e;
+  border: 2px solid white;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  color: white;
+}
+.altitude-settings {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #dce2d6;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.altitude-settings progress {
+  width: 100%;
+  accent-color: var(--green);
+}
 .leaflet-control-zoom {
   border: 1px solid #d3dac8 !important;
   box-shadow: 0 2px 8px #556b4b15 !important;

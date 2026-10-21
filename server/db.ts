@@ -52,8 +52,23 @@ export function openDatabase(dataDir: string) {
     );
     CREATE INDEX IF NOT EXISTS album_photos_photo ON album_photos(photo_id);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    PRAGMA user_version=1;
   `);
+  // Additive migration: existing IDs, previews and annotations stay unchanged.
+  const columns = new Set(
+    db
+      .prepare("PRAGMA table_info(photos)")
+      .all()
+      .map((c) => String(c.name)),
+  );
+  for (const [name, type] of Object.entries({
+    original_altitude: "REAL",
+    manual_altitude: "REAL",
+    altitude_checked: "INTEGER NOT NULL DEFAULT 0",
+    altitude_error: "TEXT",
+  }))
+    if (!columns.has(name))
+      db.exec(`ALTER TABLE photos ADD COLUMN ${name} ${type}`);
+  db.exec("PRAGMA user_version=2");
   return db;
 }
 export type DB = ReturnType<typeof openDatabase>;

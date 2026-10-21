@@ -22,3 +22,4 @@ test-results/
 .deployment-backups/
 .DS_Store
 Thumbs.db
+tools/ngrok/

@@ -4,7 +4,7 @@ import { api, count, date, post } from "./api";
 import { Icon } from "./Icon";
 import { PointPicker } from "./MapView";
 import type { ClusterSelection } from "./MapView";
-import type { Album, Photo } from "./types";
+import type { Album, Photo, Status } from "./types";
 
 export function Modal({
   title,
@@ -85,6 +85,78 @@ export function Modal({
         {children}
       </div>
     </div>
+  );
+}
+export function AltitudeSettings({ job }: { job?: Status["altitudeJob"] }) {
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const running = job?.state === "running" || job?.state === "stopping";
+  const act = async (retryErrors = false) => {
+    setBusy(true);
+    setError("");
+    try {
+      await post(running ? "/api/altitude/stop" : "/api/altitude/start", {
+        retryErrors,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="altitude-settings">
+      <h3>Высота съёмки</h3>
+      <p>
+        Дополнить существующий каталог высотой из оригиналов. Миниатюры,
+        описания, теги и ручные поправки сохраняются. Полная синхронизация не
+        нужна.
+      </p>
+      {job && (
+        <>
+          <progress max={job.total || 1} value={job.checked + job.failed} />
+          <p>
+            Проверено {count(job.checked + job.failed)} из {count(job.total)} ·
+            с высотой {count(job.found)} · ошибки {count(job.failed)} ·
+            некорректные значения {count(job.invalid)}
+          </p>
+          {running && (
+            <p className="import-current">
+              {job.current || "Чтение метаданных…"}
+            </p>
+          )}
+          {job.error && <p className="error-text">{job.error}</p>}
+          <div className="settings-links">
+            <button
+              className="button"
+              disabled={
+                busy || job.state === "stopping" || (!running && !job.pending)
+              }
+              onClick={() => act()}
+            >
+              {running ? "Приостановить" : "Дополнить высоту"}
+            </button>
+            {!running && job.failed > 0 && (
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => act(true)}
+              >
+                Повторить ошибки
+              </button>
+            )}
+          </div>
+          {!running && !job.pending && (
+            <p>Все фотографии проверены. Повторное чтение не требуется.</p>
+          )}
+        </>
+      )}
+      <p>
+        Можно остановить и продолжить позже. Новые снимки получают высоту при
+        обычном импорте. ✈ на карте — высота от 6 000 м.
+      </p>
+      {error && <p className="error-text">{error}</p>}
+    </section>
   );
 }
 export function PhotoImage({
@@ -308,6 +380,9 @@ export function EditDialog({
   const [latitude, setLatitude] = useState(photo?.lat?.toString() || ""),
     [longitude, setLongitude] = useState(photo?.lon?.toString() || ""),
     [locationChanged, setLocationChanged] = useState(false);
+  const [altitude, setAltitude] = useState(photo?.altitude?.toString() ?? ""),
+    [altitudeChanged, setAltitudeChanged] = useState(false),
+    [resetAltitude, setResetAltitude] = useState(false);
   const [picking, setPicking] = useState(false),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -347,6 +422,20 @@ export function EditDialog({
         }
       }
       const newTags = split(tags);
+      let editedAltitude: number | null | undefined;
+      if (altitudeChanged) {
+        editedAltitude =
+          !resetAltitude && altitude.trim()
+            ? Number(altitude.replace(",", "."))
+            : null;
+        if (
+          editedAltitude !== null &&
+          (!Number.isFinite(editedAltitude) ||
+            editedAltitude < -12000 ||
+            editedAltitude > 100000)
+        )
+          throw Error("Высота: от −12 000 до 100 000 метров.");
+      }
       await post("/api/photos/edit", {
         ids,
         description: replaceDescription ? description : undefined,
@@ -355,6 +444,7 @@ export function EditDialog({
           ? photo.tags.filter((t) => !newTags.includes(t))
           : split(removeTags),
         location,
+        altitude: editedAltitude,
         albumId: album || undefined,
       });
       onSaved();
@@ -467,6 +557,53 @@ export function EditDialog({
                   </span>
                 ))}
               </div>
+            )}
+            {photo && (
+              <>
+                <label>
+                  Высота съёмки, м
+                  <input
+                    inputMode="decimal"
+                    value={altitude}
+                    onChange={(e) => {
+                      setAltitude(e.target.value);
+                      setAltitudeChanged(true);
+                      setResetAltitude(false);
+                    }}
+                    placeholder="Нет данных о высоте"
+                  />
+                  <small>
+                    {photo.manual_altitude !== null
+                      ? "Высота изменена вручную"
+                      : photo.altitude_checked === 0
+                        ? "Высота ещё не прочитана из оригинала"
+                        : photo.original_altitude !== null &&
+                            photo.altitude === null
+                          ? "Некорректная высота EXIF исключена"
+                          : "Высота из метаданных фотографии"}{" "}
+                    · ✈ на карте от 6 000 м
+                  </small>
+                </label>
+                <small>Пустое поле возвращает исходную высоту из EXIF.</small>
+                {(photo.manual_altitude !== null || altitudeChanged) && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      const v = photo.original_altitude;
+                      setAltitude(
+                        v !== null && v >= -12000 && v <= 100000
+                          ? String(v)
+                          : "",
+                      );
+                      setAltitudeChanged(true);
+                      setResetAltitude(true);
+                    }}
+                  >
+                    Вернуть высоту из EXIF
+                  </button>
+                )}
+              </>
             )}
             <div className="field-heading">
               <span>Место съёмки</span>

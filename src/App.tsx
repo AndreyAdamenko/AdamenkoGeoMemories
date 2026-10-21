@@ -8,6 +8,7 @@ import {
 import { api, count, date, params, post } from "./api";
 import {
   AlbumDialog,
+  AltitudeSettings,
   ClusterDialog,
   EditDialog,
   Modal,
@@ -1214,6 +1215,7 @@ export default function App() {
               Экспорт описаний и тегов в JSON
             </a>
           </div>
+          <AltitudeSettings job={status?.altitudeJob} />
           <p className="settings-note">
             Для смены пути к архиву используйте config.local.json в папке
             приложения. Сделайте резервную копию базы перед переносом.
