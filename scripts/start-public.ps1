@@ -20,13 +20,14 @@ function New-PrivateRuntimeDirectory {
     return $folder
 }
 
-function Get-PublicResponse([string]$Url, [string]$Method = 'GET', [string]$Authorization = '') {
+function Get-PublicResponse([string]$Url, [string]$Method = 'GET', [string]$Authorization = '', [string]$Origin = '') {
     $request = [Net.HttpWebRequest]::Create($Url)
     $request.Method = $Method
     $request.Timeout = 20000
     $request.AllowAutoRedirect = $false
     $request.Headers.Add('ngrok-skip-browser-warning', 'true')
     if ($Authorization) { $request.Headers.Add('Authorization', $Authorization) }
+    if ($Origin) { $request.Headers.Add('Origin', $Origin) }
     if ($Method -eq 'POST') { $request.ContentLength = 0 }
     $response = $null
     try { $response = $request.GetResponse() }
@@ -34,7 +35,14 @@ function Get-PublicResponse([string]$Url, [string]$Method = 'GET', [string]$Auth
         if ($null -eq $_.Exception.Response) { throw }
         $response = $_.Exception.Response
     }
-    try { return [pscustomobject]@{ Status = [int]$response.StatusCode; Challenge = $response.Headers['WWW-Authenticate'] } }
+    try {
+        $body = ''
+        if ($response.ContentType -like 'text/html*') {
+            $reader = New-Object IO.StreamReader($response.GetResponseStream(), [Text.Encoding]::UTF8)
+            try { $body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        }
+        return [pscustomobject]@{ Status = [int]$response.StatusCode; Challenge = $response.Headers['WWW-Authenticate']; ContentType = $response.ContentType; Body = $body }
+    }
     finally { $response.Close() }
 }
 
@@ -89,7 +97,7 @@ function Start-PublicGallery {
         $runtime = New-PrivateRuntimeDirectory
 
         Push-Location -LiteralPath $appRoot
-        try { $configJson = & $node --input-type=module --eval 'import {loadConfig} from "./server/config.ts"; console.log(JSON.stringify(loadConfig()));' }
+        try { $configJson = & $node (Join-Path $appRoot 'server\print-config.ts') }
         finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'Cannot read application settings.' }
         $config = $configJson | ConvertFrom-Json
@@ -105,7 +113,10 @@ function Start-PublicGallery {
                 Start-Sleep -Milliseconds 500
             }
         } else { Write-Host 'Using the already running local server; it will remain running after exit.' }
-        if ($null -eq $status -or [IO.Path]::GetFullPath($status.dataDir) -ne [IO.Path]::GetFullPath($config.dataDir)) { throw 'The port is occupied by another catalog or the server is not ready.' }
+        if ($null -eq $status) { throw 'The photo server did not become ready. No public tunnel was opened.' }
+        if ([IO.Path]::GetFullPath($status.dataDir) -ne [IO.Path]::GetFullPath($config.dataDir)) {
+            throw ('Another catalog is running on port ' + $port + '. Expected: ' + $config.dataDir + '; actual: ' + $status.dataDir)
+        }
 
         # Replace only tunnels launched from this portable application's ngrok.exe.
         Get-Process -Name ngrok -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $ngrok } | Stop-Process
@@ -113,6 +124,10 @@ function Start-PublicGallery {
         $policy = @{ on_http_request = @(
             @{ actions = @(@{ type = 'basic-auth'; config = @{ credentials = @('viewer:' + $plainPassword); realm = 'AdamenkoGeoMemories'; enforce = $true } }) },
             @{ expressions = @("req.method != 'GET' && req.method != 'HEAD'"); actions = @(@{ type = 'custom-response'; config = @{ status_code = 403; content = 'Shared photo gallery is read-only.'; headers = @{ 'content-type' = 'text/plain; charset=utf-8' } } }) },
+            # Only authenticated GET/HEAD requests reach this rule. Browser module
+            # scripts carry the public Origin, which the local-only app rejects.
+            # Keep the app's local Origin guard and all public mutation blocks intact.
+            @{ actions = @(@{ type = 'remove-headers'; config = @{ headers = @('origin') } }) },
             @{ actions = @(@{ type = 'add-headers'; config = @{ headers = @{ host = ('127.0.0.1:' + $port) } } }) }
         ) }
         $policyFile = Join-Path $runtime 'policy.json'
@@ -140,11 +155,17 @@ function Start-PublicGallery {
         $authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('viewer:' + $plainPassword))
         $anonymous = Get-PublicResponse ($publicUrl + '/api/status')
         $wrongPassword = Get-PublicResponse ($publicUrl + '/api/status') 'GET' ('Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('viewer:' + [Guid]::NewGuid().ToString('N'))))
-        $allowed = Get-PublicResponse ($publicUrl + '/') 'GET' $authorization
-        $photos = Get-PublicResponse ($publicUrl + '/api/photos?limit=1') 'GET' $authorization
-        $map = Get-PublicResponse ($publicUrl + '/api/map?bbox=-180,-85,180,85&zoom=1') 'GET' $authorization
-        $blocked = Get-PublicResponse ($publicUrl + '/api/photos/edit') 'POST' $authorization
+        $allowed = Get-PublicResponse ($publicUrl + '/') 'GET' $authorization $publicUrl
+        $photos = Get-PublicResponse ($publicUrl + '/api/photos?limit=1') 'GET' $authorization $publicUrl
+        $map = Get-PublicResponse ($publicUrl + '/api/map?bbox=-180,-85,180,85&zoom=1') 'GET' $authorization $publicUrl
+        $blocked = Get-PublicResponse ($publicUrl + '/api/photos/edit') 'POST' $authorization $publicUrl
         if ($anonymous.Status -ne 401 -or -not $anonymous.Challenge -or $wrongPassword.Status -ne 401 -or $allowed.Status -ne 200 -or $photos.Status -ne 200 -or $map.Status -ne 200 -or $blocked.Status -ne 403) { throw 'Public authentication/read-only verification failed. Tunnel closed.' }
+        $scriptAsset = [regex]::Match($allowed.Body, 'src="(/assets/[^"<>]+\.js)"').Groups[1].Value
+        $styleAsset = [regex]::Match($allowed.Body, 'href="(/assets/[^"<>]+\.css)"').Groups[1].Value
+        if (-not $scriptAsset -or -not $styleAsset) { throw 'Built JavaScript or CSS was not found in the public page.' }
+        $javascript = Get-PublicResponse ($publicUrl + $scriptAsset) 'GET' $authorization $publicUrl
+        $stylesheet = Get-PublicResponse ($publicUrl + $styleAsset) 'GET' $authorization $publicUrl
+        if ($javascript.Status -ne 200 -or $javascript.ContentType -notmatch 'javascript' -or $stylesheet.Status -ne 200 -or $stylesheet.ContentType -notmatch 'text/css') { throw 'Browser JavaScript or CSS is blocked. Tunnel closed.' }
         # ngrok has loaded the policy; remove the temporary plaintext credentials.
         Remove-Item -LiteralPath $policyFile -Force
         $plainPassword = $null

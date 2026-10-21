@@ -20,11 +20,18 @@ import type { ClusterSelection } from "./MapView";
 import { emptyFilters } from "./types";
 import type { Album, Facets, Filters, Photo, Status } from "./types";
 import { warmPreviews } from "./preview-cache";
+import { PhotoViewer } from "./PhotoViewer";
+import { isPublicHostname } from "./access";
 
 const emptyFacets: Facets = { folders: [], tags: [], albums: [] };
 const activeJob = (s?: Status) =>
   !!s && ["discovering", "running", "stopping"].includes(s.job.state);
 export default function App() {
+  const canEdit = !isPublicHostname(window.location.hostname);
+  const [viewer, setViewer] = useState<{
+    photos: Photo[];
+    initialId: string;
+  } | null>(null);
   const [status, setStatus] = useState<Status>(),
     [facets, setFacets] = useState<Facets>(emptyFacets),
     [filters, setFilters] = useState<Filters>(emptyFilters);
@@ -262,16 +269,20 @@ export default function App() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [loadMore, section, view, followsMap]);
-  const openPhoto = async (id: string) => {
+  const openPhoto = async (id: string, context: Photo[] = photos) => {
     try {
       const photo = await api<Photo>(`/api/photos/${id}`);
-      setEditing({ ids: [id], photo });
+      const sequence = context.some((p) => p.id === id)
+        ? context.map((p) => (p.id === id ? photo : p))
+        : [photo];
+      setViewer({ photos: sequence, initialId: id });
     } catch (e) {
       setError((e as Error).message);
     }
   };
   const toggle = (id: string) =>
     setSelected((s) => {
+      if (!canEdit) return s;
       const next = new Set(s);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -286,6 +297,7 @@ export default function App() {
     setSection(nextSection);
   };
   const importAction = async () => {
+    if (!canEdit) return;
     setImportBusy(true);
     setError("");
     try {
@@ -374,23 +386,27 @@ export default function App() {
             <span>Альбомы</span>
             <small>{facets.albums.length}</small>
           </button>
-          <button
-            className="mobile-nav-settings"
-            aria-label="Настройки и копии"
-            onClick={() => setShowSettings(true)}
-          >
-            <Icon name="sliders" />
-          </button>
+          {canEdit && (
+            <button
+              className="mobile-nav-settings"
+              aria-label="Настройки и копии"
+              onClick={() => setShowSettings(true)}
+            >
+              <Icon name="sliders" />
+            </button>
+          )}
         </nav>
         <div className="sidebar-section-title">
           <span>АЛЬБОМЫ</span>
-          <button
-            className="icon-button"
-            aria-label="Создать альбом"
-            onClick={() => setAlbumDialog(true)}
-          >
-            <Icon name="plus" size={17} />
-          </button>
+          {canEdit && (
+            <button
+              className="icon-button"
+              aria-label="Создать альбом"
+              onClick={() => setAlbumDialog(true)}
+            >
+              <Icon name="plus" size={17} />
+            </button>
+          )}
         </div>
         <div className="sidebar-albums">
           {facets.albums.slice(0, 8).map((a) => (
@@ -406,7 +422,9 @@ export default function App() {
           ))}
           {!facets.albums.length && (
             <p className="sidebar-hint">
-              Соберите снимки в истории — создайте первый альбом.
+              {canEdit
+                ? "Соберите снимки в истории — создайте первый альбом."
+                : "Альбомов пока нет."}
             </p>
           )}
         </div>
@@ -426,27 +444,31 @@ export default function App() {
           ))}
           {!facets.tags.length && (
             <p className="sidebar-hint">
-              Добавляйте теги к одному снимку или целой группе.
+              {canEdit
+                ? "Добавляйте теги к одному снимку или целой группе."
+                : "Тегов пока нет."}
             </p>
           )}
         </div>
         <div className="sidebar-bottom">
           <div className="local-badge">
             <span className="status-dot" />
-            Локальная библиотека
+            {canEdit ? "Локальная библиотека" : "Публичная галерея"}
           </div>
           <p>
             Ваши фотографии.
             <br />
             Ваши места. Ваши истории.
           </p>
-          <button
-            className="sidebar-settings"
-            onClick={() => setShowSettings(true)}
-          >
-            <Icon name="sliders" size={17} />
-            Настройки и копии
-          </button>
+          {canEdit && (
+            <button
+              className="sidebar-settings"
+              onClick={() => setShowSettings(true)}
+            >
+              <Icon name="sliders" size={17} />
+              Настройки и копии
+            </button>
+          )}
         </div>
       </aside>
       <main className="main-content">
@@ -462,18 +484,20 @@ export default function App() {
           <div className="topbar-actions">
             <span className="read-only-badge">
               <span className="status-dot" />
-              Оригиналы только для чтения
+              {canEdit ? "Оригиналы только для чтения" : "Только просмотр"}
             </span>
-            <button
-              className={`button import-button ${activeJob(status) ? "is-importing" : ""}`}
-              onClick={() =>
-                activeJob(status) ? setShowImport(true) : importAction()
-              }
-              disabled={importBusy}
-            >
-              <Icon name="refresh" size={17} />
-              {activeJob(status) ? "Идёт импорт" : "Импортировать"}
-            </button>
+            {canEdit && (
+              <button
+                className={`button import-button ${activeJob(status) ? "is-importing" : ""}`}
+                onClick={() =>
+                  activeJob(status) ? setShowImport(true) : importAction()
+                }
+                disabled={importBusy}
+              >
+                <Icon name="refresh" size={17} />
+                {activeJob(status) ? "Идёт импорт" : "Импортировать"}
+              </button>
+            )}
           </div>
         </header>
         <div className="page-heading">
@@ -490,22 +514,24 @@ export default function App() {
                   `${count(status?.stats.ready)} изображений · ${count(status?.stats.located)} на карте`}
             </p>
           </div>
-          <div className="heading-actions">
-            {currentAlbum ? (
-              <button
-                className="button"
-                onClick={() => setAlbumDialog(currentAlbum)}
-              >
-                <Icon name="edit" size={17} />
-                Об альбоме
-              </button>
-            ) : (
-              <button className="button" onClick={() => setAlbumDialog(true)}>
-                <Icon name="plus" size={17} />
-                Новый альбом
-              </button>
-            )}
-          </div>
+          {canEdit && (
+            <div className="heading-actions">
+              {currentAlbum ? (
+                <button
+                  className="button"
+                  onClick={() => setAlbumDialog(currentAlbum)}
+                >
+                  <Icon name="edit" size={17} />
+                  Об альбоме
+                </button>
+              ) : (
+                <button className="button" onClick={() => setAlbumDialog(true)}>
+                  <Icon name="plus" size={17} />
+                  Новый альбом
+                </button>
+              )}
+            </div>
+          )}
         </div>
         {error && (
           <div className="error-banner" role="alert">
@@ -520,7 +546,7 @@ export default function App() {
             </button>
           </div>
         )}
-        {activeJob(status) && (
+        {canEdit && activeJob(status) && (
           <button className="import-strip" onClick={() => setShowImport(true)}>
             <span className="spinner" />
             <span>
@@ -536,27 +562,33 @@ export default function App() {
             <Icon name="right" size={16} />
           </button>
         )}
-        {status && ["interrupted", "cancelled"].includes(status.job.state) && (
-          <div className="resume-strip">
-            <Icon name="refresh" size={17} />
-            <span>Импорт остановлен. Сохранённые фотографии уже доступны.</span>
-            <button className="text-button" onClick={importAction}>
-              Продолжить импорт
-            </button>
-          </div>
-        )}
+        {canEdit &&
+          status &&
+          ["interrupted", "cancelled"].includes(status.job.state) && (
+            <div className="resume-strip">
+              <Icon name="refresh" size={17} />
+              <span>
+                Импорт остановлен. Сохранённые фотографии уже доступны.
+              </span>
+              <button className="text-button" onClick={importAction}>
+                Продолжить импорт
+              </button>
+            </div>
+          )}
         {section === "albums" ? (
           <div className="albums-grid">
-            <button
-              className="new-album-card"
-              onClick={() => setAlbumDialog(true)}
-            >
-              <span>
-                <Icon name="plus" size={28} />
-              </span>
-              <strong>Новая история</strong>
-              <small>Создать альбом</small>
-            </button>
+            {canEdit && (
+              <button
+                className="new-album-card"
+                onClick={() => setAlbumDialog(true)}
+              >
+                <span>
+                  <Icon name="plus" size={28} />
+                </span>
+                <strong>Новая история</strong>
+                <small>Создать альбом</small>
+              </button>
+            )}
             {facets.albums.map((a) => (
               <article key={a.id} className="album-card">
                 <button
@@ -582,20 +614,24 @@ export default function App() {
                     </button>
                     <p>{a.description || "История ждёт ваших фотографий"}</p>
                   </div>
-                  <button
-                    className="icon-button"
-                    aria-label={`Редактировать ${a.name}`}
-                    onClick={() => setAlbumDialog(a)}
-                  >
-                    <Icon name="edit" size={17} />
-                  </button>
-                  <button
-                    className="icon-button muted"
-                    aria-label={`Удалить альбом ${a.name}`}
-                    onClick={() => setDeleteAlbum(a)}
-                  >
-                    <Icon name="trash" size={16} />
-                  </button>
+                  {canEdit && (
+                    <button
+                      className="icon-button"
+                      aria-label={`Редактировать ${a.name}`}
+                      onClick={() => setAlbumDialog(a)}
+                    >
+                      <Icon name="edit" size={17} />
+                    </button>
+                  )}
+                  {canEdit && (
+                    <button
+                      className="icon-button muted"
+                      aria-label={`Удалить альбом ${a.name}`}
+                      onClick={() => setDeleteAlbum(a)}
+                    >
+                      <Icon name="trash" size={16} />
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
@@ -748,7 +784,7 @@ export default function App() {
                 {loading && <span className="subtle-loading"> · загрузка</span>}
               </span>
               <div>
-                {selecting && (
+                {canEdit && selecting && (
                   <button
                     className="text-button"
                     onClick={() =>
@@ -758,7 +794,7 @@ export default function App() {
                     Выбрать загруженные ({photos.length})
                   </button>
                 )}
-                {!filters.issues && (
+                {canEdit && !filters.issues && (
                   <button
                     className="text-button"
                     onClick={() => {
@@ -773,32 +809,41 @@ export default function App() {
               </div>
             </div>
             {status && !status.stats.total && !activeJob(status) ? (
-              <div className="welcome-state">
-                <div className="welcome-map-art">
-                  <Icon name="map" size={80} />
-                  <span>
-                    <Icon name="image" size={30} />
-                  </span>
+              !canEdit ? (
+                <div className="empty-results">
+                  <Icon name="image" size={40} />
+                  <h2>Фотографий пока нет</h2>
+                  <p>Владелец ещё не добавил снимки в галерею.</p>
                 </div>
-                <span className="eyebrow">
-                  У КАЖДОГО СНИМКА ЕСТЬ СВОЁ МЕСТО
-                </span>
-                <h2>Соберите свою карту воспоминаний</h2>
-                <p>
-                  Добавьте фотографии из архива. Мы прочитаем даты и координаты,
-                  <br />а вы сможете сохранить истории, теги и любимые места.
-                </p>
-                <code>{status.sourceRoot}</code>
-                <button
-                  className="button primary"
-                  onClick={importAction}
-                  disabled={importBusy}
-                >
-                  <Icon name="plus" size={18} />
-                  Импортировать фотографии
-                </button>
-                <small>Оригиналы останутся без изменений</small>
-              </div>
+              ) : (
+                <div className="welcome-state">
+                  <div className="welcome-map-art">
+                    <Icon name="map" size={80} />
+                    <span>
+                      <Icon name="image" size={30} />
+                    </span>
+                  </div>
+                  <span className="eyebrow">
+                    У КАЖДОГО СНИМКА ЕСТЬ СВОЁ МЕСТО
+                  </span>
+                  <h2>Соберите свою карту воспоминаний</h2>
+                  <p>
+                    Добавьте фотографии из архива. Мы прочитаем даты и
+                    координаты,
+                    <br />а вы сможете сохранить истории, теги и любимые места.
+                  </p>
+                  <code>{status.sourceRoot}</code>
+                  <button
+                    className="button primary"
+                    onClick={importAction}
+                    disabled={importBusy}
+                  >
+                    <Icon name="plus" size={18} />
+                    Импортировать фотографии
+                  </button>
+                  <small>Оригиналы останутся без изменений</small>
+                </div>
+              )
             ) : filters.issues ? (
               <div className="issues-list">
                 <div className="issues-intro">
@@ -871,19 +916,21 @@ export default function App() {
                             >
                               <PhotoImage id={p.id} />
                             </button>
-                            <button
-                              className={`photo-checkbox ${selecting ? "visible" : ""}`}
-                              aria-label={`${selected.has(p.id) ? "Убрать из выбора" : "Выбрать"} ${p.filename}`}
-                              aria-pressed={selected.has(p.id)}
-                              onClick={() => {
-                                setSelecting(true);
-                                toggle(p.id);
-                              }}
-                            >
-                              {selected.has(p.id) && (
-                                <Icon name="check" size={15} />
-                              )}
-                            </button>
+                            {canEdit && (
+                              <button
+                                className={`photo-checkbox ${selecting ? "visible" : ""}`}
+                                aria-label={`${selected.has(p.id) ? "Убрать из выбора" : "Выбрать"} ${p.filename}`}
+                                aria-pressed={selected.has(p.id)}
+                                onClick={() => {
+                                  setSelecting(true);
+                                  toggle(p.id);
+                                }}
+                              >
+                                {selected.has(p.id) && (
+                                  <Icon name="check" size={15} />
+                                )}
+                              </button>
+                            )}
                             {p.lat !== null && p.lon !== null && (
                               <span
                                 className={`photo-location ${p.manual_lat !== null ? "manual" : ""}`}
@@ -935,7 +982,9 @@ export default function App() {
                           {followsMap
                             ? "Переместите или отдалите карту, либо измените фильтры."
                             : currentAlbum
-                              ? "Откройте все фотографии, выделите снимки и добавьте их в этот альбом."
+                              ? canEdit
+                                ? "Откройте все фотографии, выделите снимки и добавьте их в этот альбом."
+                                : "В этом альбоме пока нет снимков."
                               : "Попробуйте изменить фильтры или дождаться импорта."}
                         </p>
                         {currentAlbum && (
@@ -978,17 +1027,19 @@ export default function App() {
           <span>
             AdamenkoGeoMemories <span>·</span> Личный фотоатлас
           </span>
-          <button
-            className="text-button"
-            onClick={() => navigate({ issues: "1" })}
-          >
-            <Icon name="alert" size={14} />
-            Результаты импорта
-            {status?.stats.issues ? ` · ${count(status.stats.issues)}` : ""}
-          </button>
+          {canEdit && (
+            <button
+              className="text-button"
+              onClick={() => navigate({ issues: "1" })}
+            >
+              <Icon name="alert" size={14} />
+              Результаты импорта
+              {status?.stats.issues ? ` · ${count(status.stats.issues)}` : ""}
+            </button>
+          )}
         </footer>
       </main>
-      {selected.size > 0 && (
+      {canEdit && selected.size > 0 && (
         <div className="selection-bar">
           <div>
             <span className="selection-count">{count(selected.size)}</span>
@@ -1042,17 +1093,21 @@ export default function App() {
         <ClusterDialog
           cluster={cluster}
           onClose={() => setCluster(null)}
-          onPhoto={(id) => {
+          onPhoto={(id, context) => {
             setCluster(null);
-            openPhoto(id);
+            openPhoto(id, context);
           }}
-          onEdit={(ids) => {
-            setCluster(null);
-            setEditing({ ids });
-          }}
+          onEdit={
+            canEdit
+              ? (ids) => {
+                  setCluster(null);
+                  setEditing({ ids });
+                }
+              : undefined
+          }
         />
       )}
-      {editing && (
+      {canEdit && editing && (
         <EditDialog
           ids={editing.ids}
           photo={editing.photo}
@@ -1061,14 +1116,30 @@ export default function App() {
           onSaved={saved}
         />
       )}
-      {albumDialog && (
+      {viewer && (
+        <PhotoViewer
+          key={viewer.initialId}
+          photos={viewer.photos}
+          initialId={viewer.initialId}
+          onClose={() => setViewer(null)}
+          onEdit={
+            canEdit
+              ? (photo) => {
+                  setViewer(null);
+                  setEditing({ ids: [photo.id], photo });
+                }
+              : undefined
+          }
+        />
+      )}
+      {canEdit && albumDialog && (
         <AlbumDialog
           album={albumDialog === true ? undefined : albumDialog}
           onClose={() => setAlbumDialog(null)}
           onSaved={saved}
         />
       )}
-      {deleteAlbum && (
+      {canEdit && deleteAlbum && (
         <Modal title="Удалить альбом?" onClose={() => setDeleteAlbum(null)}>
           <p className="modal-intro">
             Альбом «{deleteAlbum.name}» будет удалён. Фотографии, их описания и
@@ -1098,7 +1169,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {showImport && (
+      {canEdit && showImport && (
         <Modal title="Импорт фотографий" onClose={() => setShowImport(false)}>
           <p className="modal-intro">
             Каталог читает метаданные и сохраняет связь с оригиналами. Повторное
@@ -1187,7 +1258,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {showSettings && (
+      {canEdit && showSettings && (
         <Modal
           title="Локальная библиотека"
           onClose={() => setShowSettings(false)}

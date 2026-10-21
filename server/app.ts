@@ -245,7 +245,7 @@ export function createApp(config: Config) {
     try {
       const file = await media.preview(
         req.params.id,
-        req.query.size === "large",
+        req.query.size === "screen" ? "screen" : req.query.size === "large",
       );
       res.setHeader("Cache-Control", "private, max-age=3600");
       res.type("webp").sendFile(file);

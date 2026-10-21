@@ -5,6 +5,7 @@ import { Icon } from "./Icon";
 import { PointPicker } from "./MapView";
 import type { ClusterSelection } from "./MapView";
 import type { Album, Photo, Status } from "./types";
+import { PhotoViewer } from "./PhotoViewer";
 
 export function Modal({
   title,
@@ -30,6 +31,7 @@ export function Modal({
       ).filter((el) => el.getClientRects().length);
     focusable()[0]?.focus();
     const handler = (e: KeyboardEvent) => {
+      if (document.querySelector(".photo-viewer")) return;
       const allDialogs = document.querySelectorAll(".modal");
       if (allDialogs[allDialogs.length - 1] !== dialog.current) return;
       if (e.key === "Escape") {
@@ -193,8 +195,8 @@ export function ClusterDialog({
 }: {
   cluster: ClusterSelection;
   onClose: () => void;
-  onPhoto: (id: string) => void;
-  onEdit: (ids: string[]) => void;
+  onPhoto: (id: string, photos: Photo[]) => void;
+  onEdit?: (ids: string[]) => void;
 }) {
   const [photos, setPhotos] = useState<Photo[]>([]),
     [busy, setBusy] = useState(false),
@@ -224,7 +226,7 @@ export function ClusterDialog({
       <div className="cluster-dialog-content">
         <div className="cluster-photo-grid">
           {photos.map((p) => (
-            <button key={p.id} onClick={() => onPhoto(p.id)}>
+            <button key={p.id} onClick={() => onPhoto(p.id, photos)}>
               <PhotoImage id={p.id} />
               <span>{p.description || p.filename}</span>
               <small>{date(p.taken_at)}</small>
@@ -233,13 +235,15 @@ export function ClusterDialog({
         </div>
         {error && <p className="error-text">{error}</p>}
         <div className="modal-actions">
-          <button
-            className="text-button"
-            disabled={!photos.length}
-            onClick={() => onEdit(photos.map((p) => p.id))}
-          >
-            Редактировать загруженные ({photos.length})
-          </button>
+          {onEdit && (
+            <button
+              className="text-button"
+              disabled={!photos.length}
+              onClick={() => onEdit(photos.map((p) => p.id))}
+            >
+              Редактировать загруженные ({photos.length})
+            </button>
+          )}
           {photos.length < cluster.count && (
             <button
               className="button"
@@ -372,6 +376,7 @@ export function EditDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const [viewing, setViewing] = useState(false);
   const [description, setDescription] = useState(photo?.description || ""),
     [replaceDescription, setReplaceDescription] = useState(!!photo);
   const [tags, setTags] = useState(photo?.tags.join(", ") || ""),
@@ -473,6 +478,14 @@ export function EditDialog({
           {photo && (
             <div className="photo-preview">
               <PhotoImage id={photo.id} large />
+              <button
+                type="button"
+                className="button preview-fullscreen"
+                onClick={() => setViewing(true)}
+              >
+                <Icon name="expand" size={17} />
+                На весь экран
+              </button>
               <div className="photo-preview-caption">
                 <strong>{photo.filename}</strong>
                 <span>
@@ -713,6 +726,13 @@ export function EditDialog({
             setResetLocation(false);
             setPicking(false);
           }}
+        />
+      )}
+      {viewing && photo && (
+        <PhotoViewer
+          photos={[photo]}
+          initialId={photo.id}
+          onClose={() => setViewing(false)}
         />
       )}
     </>

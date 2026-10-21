@@ -18,6 +18,190 @@ import { originalPath } from "../server/media.ts";
 import { Importer } from "../server/importer.ts";
 import { AltitudeBackfill } from "../server/altitude-backfill.ts";
 import { readAltitude, signedAltitude } from "../server/altitude.ts";
+import { execFileSync } from "node:child_process";
+import { isPublicHostname } from "../src/access.ts";
+
+test("Публичный интерфейс скрывает управление библиотекой, локальный сохраняет его", async () => {
+  for (const hostname of ["localhost", "LOCALHOST", "127.0.0.1"])
+    assert.equal(isPublicHostname(hostname), false);
+  for (const hostname of [
+    "example.com",
+    "endowment.ngrok-free.dev",
+    "localhost.example.com",
+    "127.0.0.1.example.com",
+    "",
+  ])
+    assert.equal(isPublicHostname(hostname), true);
+  const { createServer } = await import("vite");
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const vite = await createServer({
+    configFile: false,
+    logLevel: "error",
+    server: { middlewareMode: true, hmr: false },
+    plugins: [
+      {
+        name: "map-without-dom-for-render-test",
+        enforce: "pre",
+        resolveId(source) {
+          if (/(?:^|\/)MapView(?:\.tsx)?$/.test(source.replaceAll('\\','/'))) return "\0map-render-stub";
+        },
+        load(id) {
+          if (id === "\0map-render-stub")
+            return "export const MapView=()=>null;export const PointPicker=()=>null;";
+        },
+      },
+    ],
+  });
+  try {
+    const { default: App } = await vite.ssrLoadModule("/src/App.tsx");
+    const { ClusterDialog } = await vite.ssrLoadModule("/src/Dialogs.tsx");
+    const controls = [
+      "Настройки и копии",
+      "Импортировать",
+      "Создать альбом",
+      "Новый альбом",
+      "Выбрать фото",
+      "Результаты импорта",
+    ];
+    for (const hostname of [
+      "127.0.0.1",
+      "localhost",
+      "photos.ngrok-free.dev",
+    ]) {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: { location: { hostname } },
+      });
+      const html = renderToStaticMarkup(React.createElement(App));
+      for (const label of controls)
+        assert.equal(
+          html.includes(label),
+          !isPublicHostname(hostname),
+          hostname + ": " + label,
+        );
+      assert.ok(html.includes("Все фотографии"));
+      assert.ok(html.includes("Альбомы"));
+      if (isPublicHostname(hostname))
+        assert.ok(html.includes("Только просмотр"));
+    }
+    const props = {
+      cluster: { clusterId: 1, snapshot: "test", count: 10 },
+      onClose: () => {},
+      onPhoto: () => {},
+    };
+    assert.ok(
+      !renderToStaticMarkup(React.createElement(ClusterDialog, props)).includes(
+        "Редактировать загруженные",
+      ),
+    );
+    assert.ok(
+      renderToStaticMarkup(
+        React.createElement(ClusterDialog, { ...props, onEdit: () => {} }),
+      ).includes("Редактировать загруженные"),
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
+    await vite.close();
+  }
+});
+
+test("Настройки передаются в PowerShell без потери кириллицы при любой кодировке консоли", () => {
+  const source = path.join(os.tmpdir(), "Фото_Архив"),
+    data = path.join(os.tmpdir(), "Фото_Каталог");
+  const stdout = execFileSync(
+    process.execPath,
+    [path.resolve("server/print-config.ts")],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PHOTO_SOURCE: source,
+        PHOTO_DATA_DIR: data,
+        PORT: "3210",
+      },
+    },
+  );
+  assert.doesNotMatch(stdout, /[^\x00-\x7f]/);
+  // ASCII output is identical after a legacy console's single-byte decoding.
+  const config = JSON.parse(Buffer.from(stdout, "utf8").toString("latin1"));
+  assert.equal(config.sourceRoot, source);
+  assert.equal(config.dataDir, data);
+});
+
+test("Экранное превью имеет отдельный кэш, ограничено 3840 пикселями и не меняет оригинал", async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "geo-memories-screen-"));
+  const source = path.join(temp, "source"),
+    data = path.join(temp, "data");
+  await fs.mkdir(source);
+  const file = path.join(source, "wide.jpg");
+  await sharp({
+    create: { width: 5000, height: 60, channels: 3, background: "#416f9e" },
+  })
+    .jpeg()
+    .toFile(file);
+  const original = await fs.readFile(file),
+    stat = await fs.stat(file);
+  const service = createApp({
+    sourceRoot: source,
+    dataDir: data,
+    port: 0,
+    importConcurrency: 1,
+  });
+  const server = service.app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    service.db
+      .prepare(
+        "INSERT INTO photos(id,source_root,relative_path,filename,folder,size,mtime_ms,format) VALUES('screen-test',?,'wide.jpg','wide.jpg','',?,?,'JPEG')",
+      )
+      .run(source, stat.size, stat.mtimeMs);
+    for (const [suffix, width] of [
+      ["", 480],
+      ["?size=large", 1800],
+      ["?size=screen", 3840],
+    ] as const) {
+      const response = await fetch(
+        base + "/api/photos/screen-test/preview" + suffix,
+      );
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get("content-type")!, /image\/webp/);
+      const metadata = await sharp(
+        Buffer.from(await response.arrayBuffer()),
+      ).metadata();
+      assert.equal(metadata.width, width);
+    }
+    const cached = await fs.readdir(path.join(data, "thumbnails"));
+    assert.equal(cached.length, 3);
+    const screenFile = path.join(
+      data,
+      "thumbnails",
+      cached.find((f) => f.endsWith("-screen.webp"))!,
+    );
+    const before = (await fs.stat(screenFile)).mtimeMs;
+    assert.equal(
+      (await fetch(base + "/api/photos/screen-test/preview?size=screen"))
+        .status,
+      200,
+    );
+    assert.equal((await fs.stat(screenFile)).mtimeMs, before);
+    assert.deepEqual(await fs.readFile(file), original);
+    assert.equal((await fs.stat(file)).mtimeMs, stat.mtimeMs);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((e) => (e ? reject(e) : resolve())),
+    );
+    await service.close();
+    assert.ok(
+      inside(os.tmpdir(), temp) &&
+        path.basename(temp).startsWith("geo-memories-screen-"),
+    );
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("Дочитывание высоты мигрирует старую базу, продолжается после остановки и сохраняет оригиналы, кэш и ручные поправки", async () => {
   const temp = await fs.mkdtemp(

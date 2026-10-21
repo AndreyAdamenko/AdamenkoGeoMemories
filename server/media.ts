@@ -34,9 +34,9 @@ export function createMedia(db: DB, config: Config, tool: ExifTool) {
     if (next) next();
     else running--;
   }
-  async function preview(id: string, large = false) {
+  async function preview(id: string, large: boolean | "screen" = false) {
     const { photo, file } = await originalPath(db, id);
-    const key = `${id}-${photo.size}-${Math.trunc(Number(photo.mtime_ms))}-${large ? "large" : "thumb"}`;
+    const key = `${id}-${photo.size}-${Math.trunc(Number(photo.mtime_ms))}-${large === "screen" ? "screen" : large ? "large" : "thumb"}`;
     const dest = path.join(config.dataDir, "thumbnails", `${key}.webp`);
     try {
       await fs.access(dest);
@@ -53,8 +53,8 @@ export function createMedia(db: DB, config: Config, tool: ExifTool) {
           sharp(input, { failOn: "error", limitInputPixels: 180_000_000 })
             .rotate()
             .resize({
-              width: large ? 1800 : 480,
-              height: large ? 1800 : 480,
+              width: large === "screen" ? 3840 : large ? 1800 : 480,
+              height: large === "screen" ? 3840 : large ? 1800 : 480,
               fit: "inside",
               withoutEnlargement: true,
             })
