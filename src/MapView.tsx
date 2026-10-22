@@ -42,12 +42,14 @@ export function MapView({
   onPhoto,
   onCluster,
   onBoundsChange,
+  focusPhoto,
 }: {
   filters: Filters;
   revision: number;
   onPhoto: (id: string) => void;
   onCluster: (cluster: ClusterSelection) => void;
   onBoundsChange: (bounds: string) => void;
+  focusPhoto?: { id: string; lat: number; lon: number; zoom: number } | null;
 }) {
   const element = useRef<HTMLDivElement>(null),
     map = useRef<L.Map | null>(null),
@@ -81,6 +83,25 @@ export function MapView({
       map.current = null;
     };
   }, []);
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !focusPhoto) return;
+    m.setView([focusPhoto.lat, focusPhoto.lon], focusPhoto.zoom, {
+      animate: false,
+    });
+    const selected = L.circleMarker([focusPhoto.lat, focusPhoto.lon], {
+      radius: 17,
+      color: "#e39143",
+      weight: 4,
+      fillOpacity: 0.12,
+      fillColor: "#e39143",
+    }).addTo(m);
+    selected.bindTooltip("Фотография по ссылке", { direction: "top" });
+    selected.on("click", () => callback.current(focusPhoto.id));
+    return () => {
+      selected.remove();
+    };
+  }, [focusPhoto?.id, focusPhoto?.lat, focusPhoto?.lon, focusPhoto?.zoom]);
   useEffect(() => {
     const m = map.current!;
     let controller: AbortController | undefined,

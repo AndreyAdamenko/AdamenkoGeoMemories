@@ -20,6 +20,55 @@ import { AltitudeBackfill } from "../server/altitude-backfill.ts";
 import { readAltitude, signedAltitude } from "../server/altitude.ts";
 import { execFileSync } from "node:child_process";
 import { isPublicHostname } from "../src/access.ts";
+import {
+  photoLink,
+  linkedPhotoId,
+  photoMapTarget,
+} from "../src/photo-links.ts";
+
+test("Ссылки открывают конкретное фото и приближают карту без передачи пароля", () => {
+  const id = "b634628b-a4de-442e-893d-651a015cd244";
+  const link = photoLink(
+    id,
+    "https://viewer:secret@gallery.example/path?q=private#old",
+  );
+  assert.equal(link, `https://gallery.example/#photo=${id}`);
+  assert.equal(linkedPhotoId(new URL(link).hash), id);
+  assert.equal(
+    photoLink(id, "http://127.0.0.1:3210"),
+    `http://127.0.0.1:3210/#photo=${id}`,
+  );
+  for (const invalid of [
+    "",
+    "#other=id",
+    "#photo=../file",
+    "#photo=%3Cscript%3E",
+    "#photo=" + "a".repeat(129),
+  ])
+    assert.equal(linkedPhotoId(invalid), null);
+  assert.throws(() => photoLink("../file", "https://gallery.example"));
+  assert.throws(() => photoLink(id, "file:///photos"));
+  assert.deepEqual(photoMapTarget({ id, lat: 0, lon: 0 }), {
+    id,
+    lat: 0,
+    lon: 0,
+    zoom: 17,
+  });
+  assert.deepEqual(photoMapTarget({ id, lat: -43.3, lon: -76.8 }), {
+    id,
+    lat: -43.3,
+    lon: -76.8,
+    zoom: 17,
+  });
+  for (const coords of [
+    { lat: null, lon: 45 },
+    { lat: 45, lon: null },
+    { lat: 91, lon: 0 },
+    { lat: 0, lon: 181 },
+    { lat: NaN, lon: 0 },
+  ])
+    assert.equal(photoMapTarget({ id, ...coords }), null);
+});
 
 test("Публичный интерфейс скрывает управление библиотекой, локальный сохраняет его", async () => {
   for (const hostname of ["localhost", "LOCALHOST", "127.0.0.1"])
@@ -45,7 +94,8 @@ test("Публичный интерфейс скрывает управлени�
         name: "map-without-dom-for-render-test",
         enforce: "pre",
         resolveId(source) {
-          if (/(?:^|\/)MapView(?:\.tsx)?$/.test(source.replaceAll('\\','/'))) return "\0map-render-stub";
+          if (/(?:^|\/)MapView(?:\.tsx)?$/.test(source.replaceAll("\\", "/")))
+            return "\0map-render-stub";
         },
         load(id) {
           if (id === "\0map-render-stub")

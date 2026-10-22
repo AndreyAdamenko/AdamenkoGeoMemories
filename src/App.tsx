@@ -22,6 +22,7 @@ import type { Album, Facets, Filters, Photo, Status } from "./types";
 import { warmPreviews } from "./preview-cache";
 import { PhotoViewer } from "./PhotoViewer";
 import { isPublicHostname } from "./access";
+import { linkedPhotoId, photoMapTarget } from "./photo-links";
 
 const emptyFacets: Facets = { folders: [], tags: [], albums: [] };
 const activeJob = (s?: Status) =>
@@ -57,6 +58,51 @@ export default function App() {
     [deleteAlbum, setDeleteAlbum] = useState<Album | null>(null);
   const [cluster, setCluster] = useState<ClusterSelection | null>(null);
   const [mapBounds, setMapBounds] = useState<string | null>(null);
+  const [sharedPhoto, setSharedPhoto] = useState<Photo | null>(null),
+    [sharedLoading, setSharedLoading] = useState(false);
+  useEffect(() => {
+    let controller: AbortController | undefined;
+    const openLink = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      const request = controller,
+        id = linkedPhotoId(window.location.hash);
+      setSharedPhoto(null);
+      setSharedLoading(!!id);
+      if (!id) return;
+      setViewer(null);
+      setCluster(null);
+      setSearch("");
+      setFilters(emptyFilters);
+      setSection("photos");
+      setView("split");
+      setSelected(new Set());
+      setSelecting(false);
+      try {
+        const photo = await api<Photo>(
+          `/api/photos/${encodeURIComponent(id)}`,
+          { signal: request.signal },
+        );
+        if (request.signal.aborted) return;
+        setSharedPhoto(photo);
+        setView(photoMapTarget(photo) ? "split" : "grid");
+        photoFeedRef.current?.scrollTo({ top: 0 });
+      } catch (e) {
+        if (!request.signal.aborted)
+          setError(
+            `Не удалось открыть фотографию по ссылке: ${(e as Error).message}`,
+          );
+      } finally {
+        if (!request.signal.aborted) setSharedLoading(false);
+      }
+    };
+    void openLink();
+    window.addEventListener("hashchange", openLink);
+    return () => {
+      controller?.abort();
+      window.removeEventListener("hashchange", openLink);
+    };
+  }, []);
   const versionSeen = useRef(-1),
     lastRefresh = useRef(0),
     loadMoreRef = useRef<HTMLDivElement>(null),
@@ -472,6 +518,11 @@ export default function App() {
         </div>
       </aside>
       <main className="main-content">
+        {sharedLoading && (
+          <div className="shared-photo-loading" role="status">
+            Открываю фотографию по ссылке…
+          </div>
+        )}
         <header className="topbar">
           <div className="breadcrumb">
             Библиотека <span>/</span>{" "}
@@ -895,6 +946,48 @@ export default function App() {
                     aria-label="Фотолента"
                     aria-busy={loading}
                   >
+                    {sharedPhoto && (
+                      <section
+                        className="shared-photo-card"
+                        aria-label="Фотография по ссылке"
+                      >
+                        <div className="field-heading">
+                          <strong>Фотография по ссылке</strong>
+                          <button
+                            className="icon-button"
+                            aria-label="Закрыть фотографию по ссылке"
+                            onClick={() => {
+                              setSharedPhoto(null);
+                              window.history.replaceState(
+                                null,
+                                "",
+                                window.location.pathname +
+                                  window.location.search,
+                              );
+                            }}
+                          >
+                            <Icon name="close" size={17} />
+                          </button>
+                        </div>
+                        <button
+                          className="shared-photo-preview"
+                          onClick={() =>
+                            openPhoto(sharedPhoto.id, [sharedPhoto])
+                          }
+                          aria-label="Открыть фотографию на весь экран"
+                        >
+                          <PhotoImage id={sharedPhoto.id} large />
+                        </button>
+                        <strong>{sharedPhoto.filename}</strong>
+                        <span>{date(sharedPhoto.taken_at)}</span>
+                        {sharedPhoto.description && (
+                          <p>{sharedPhoto.description}</p>
+                        )}
+                        {!photoMapTarget(sharedPhoto) && (
+                          <p>У фотографии пока нет координат.</p>
+                        )}
+                      </section>
+                    )}
                     <div className="photo-grid">
                       {photos.map((p) => (
                         <article
@@ -1017,6 +1110,9 @@ export default function App() {
                     onPhoto={openPhoto}
                     onCluster={setCluster}
                     onBoundsChange={setMapBounds}
+                    focusPhoto={
+                      sharedPhoto ? photoMapTarget(sharedPhoto) : null
+                    }
                   />
                 )}
               </div>

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Icon } from "./Icon";
 import { date } from "./api";
 import type { Photo } from "./types";
+import { CopyPhotoLink } from "./CopyPhotoLink";
 
 export function PhotoViewer({
   photos,
@@ -173,6 +174,7 @@ export function PhotoViewer({
           </span>
         </div>
         <div className="viewer-tools">
+          <CopyPhotoLink id={photo.id} compact />
           <button
             onClick={() => changeZoom(zoom / 1.25)}
             disabled={zoom <= 1 || !loaded}

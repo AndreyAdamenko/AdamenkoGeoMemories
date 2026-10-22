@@ -17,6 +17,10 @@ const paths: Record<string, string[]> = {
   search: ["M21 21l-5-5", "M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0"],
   plus: ["M12 5v14M5 12h14"],
   minus: ["M5 12h14"],
+  link: [
+    "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2",
+    "M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2",
+  ],
   expand: ["M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"],
   shrink: ["M3 8h5V3M21 8h-5V3M16 21v-5h5M8 21v-5H3"],
   close: ["m6 6 12 12M6 18 18 6"],
